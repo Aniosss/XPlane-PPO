@@ -61,7 +61,10 @@ class Env(gym.Env):
 
         # делаем степ
         '''
-        sim/flightmodel/controls/elv_trim
+        sim/flightmodel/controls/elv_trim высота тангаж pitch
+        sim/flightmodel/controls/ail_trim крен roll
+        sim/flightmodel/controls/rud_trim поворот yaw
+        sim/flightmodel/engine/ENGN_thro_override изменяем силу тяги (0.0 максимум -2 выключение) (-2; 0)
         
         '''
         target_lat = 1.0
@@ -72,6 +75,13 @@ class Env(gym.Env):
         # получаем датарефы
         dg = []
         datarefs_get = self.xpc.getDREFs(dg)
+        '''
+        sim/flightmodel/position/phi угол крена в градусах
+        sim/flightmodel/position/theta тангаж
+        sim/flightmodel/position/psi угол поворота относительно оси Z
+        sim/flightmodel/position/elevation высота метры
+        sim/flightmodel/position/indicated_airspeed 
+        '''
 
         # обновляем данные
         self.angle_of_attack = datarefs_get[0]
