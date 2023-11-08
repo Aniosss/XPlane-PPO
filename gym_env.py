@@ -1,7 +1,37 @@
+import time
+
 import gym
 import numpy as np
 from gym import spaces
+
+import xpc
 from xpc import XPlaneConnect
+
+START_ROLL = -1.6692969799041748
+START_PITCH = 10.215349197387695
+START_YAW = 254.08590698242188
+START_LATITUDE = 55.98773193359375
+START_LONGITUDE = 37.517459869384766
+START_ELEVATION = 1510.2215576171875
+START_AIRSPEED = 104.39952087402344
+START_RPM = 1363.704345703125
+START_FLAP_POSITION = 0.0
+START_PARKING_BRAKE = 0.0
+
+TARGET_LAT = 55.97421646118164
+TARGET_LON = 37.4338493347168
+TARGET_ELEVATION = 193.03797912597656
+
+EPS = 1e-4
+
+DATAREFS_STATE = ['sim/flightmodel/position/phi', 'sim/flightmodel/position/theta', 'sim/flightmodel/position/psi',
+              'sim/flightmodel/position/latitude', 'sim/flightmodel/position/longitude',
+              'sim/flightmodel/position/elevation',
+              'sim/cockpit2/gauges/indicators/airspeed_kts_pilot', 'sim/cockpit2/engine/indicators/engine_speed_rpm',
+              'sim/cockpit2/controls/flap_handle_request_ratio', 'sim/flightmodel/controls/parkbrake']
+
+START_VALUES = [START_ROLL, START_PITCH, START_YAW, START_LATITUDE, START_LONGITUDE, START_ELEVATION, START_AIRSPEED,
+                START_RPM, START_FLAP_POSITION, START_PARKING_BRAKE]
 
 
 class Env(gym.Env):
@@ -9,7 +39,7 @@ class Env(gym.Env):
         super(Env, self).__init__()
 
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(10,))
-        self.action_space = spaces.Box(low=-1, high=1, shape=(2,))
+        self.action_space = spaces.Box(low=-2, high=1, shape=(5,))
 
         self.xpc = XPlaneConnect()
         try:
@@ -20,63 +50,75 @@ class Env(gym.Env):
             return
 
         # начальное состояние
-        self.roll = -1.6692969799041748
-        self.pitch = 10.215349197387695
-        self.yaw = 254.08590698242188
-        self.latitude = 55.98773193359375
-        self.longitude = 37.517459869384766
-        self.elevation = 1510.2215576171875
-        self.airspeed = 104.39952087402344
-        self.rpm = 2517.006591796875
-        self.gear_state = 0.0
-        self.flap_position = 1.0
+        self.roll = START_ROLL
+        self.pitch = START_PITCH
+        self.yaw = START_YAW
+        self.latitude = START_LATITUDE
+        self.longitude = START_LONGITUDE
+        self.elevation = START_ELEVATION
+        self.airspeed = START_AIRSPEED
+        self.rpm = START_RPM
+        self.flap_position = START_FLAP_POSITION
+        self.parking_brake = START_PARKING_BRAKE
 
     def reset(self):
-        # начальное состояние
-        self.roll = -1.6692969799041748
-        self.pitch = 10.215349197387695
-        self.yaw = 254.08590698242188
-        self.latitude = 55.98773193359375
-        self.longitude = 37.517459869384766
-        self.elevation = 1510.2215576171875
-        self.airspeed = 104.39952087402344
-        self.rpm = 2517.006591796875
-        self.gear_state = 0.0
-        self.flap_position = 1.0
+        #       Lat             Lon              Alt              Pitch        Roll        Yaw       Gear
+        posi = [START_LATITUDE, START_LONGITUDE, START_ELEVATION, START_PITCH, START_ROLL, START_YAW, 0]
+        xpc.XPlaneConnect().sendPOSI(posi)
+        xpc.XPlaneConnect().sendDREFs(DATAREFS_STATE, START_VALUES)
 
-        datarefs = []
-        values = []
+        # начальное состояние
+        self.roll = START_ROLL
+        self.pitch = START_PITCH
+        self.yaw = START_YAW
+        self.latitude = START_LATITUDE
+        self.longitude = START_LONGITUDE
+        self.elevation = START_ELEVATION
+        self.airspeed = START_AIRSPEED
+        self.rpm = START_RPM
+        self.flap_position = START_FLAP_POSITION
+        self.parking_brake = START_PARKING_BRAKE
+
+        datarefs = DATAREFS_STATE
+        values = START_VALUES
         self.xpc.sendDREFs(datarefs, values)
 
     def state(self):
-        return np.array([self.roll,self.pitch, self.yaw, self.latitude, self.longitude, self.elevation,  self.airspeed,
-                         self.rpm, self.gear_state, self.flap_position])
+        return np.array([self.roll, self.pitch, self.yaw, self.latitude, self.longitude, self.elevation, self.airspeed,
+                         self.rpm, self.flap_position, self.parking_brake])
 
     def step(self, action):
-        datarefs = []
-        values_set = []
+        datarefs = ['sim/flightmodel/controls/elv_trim', 'sim/flightmodel/controls/ail_trim',
+                    'sim/flightmodel/controls/rud_trim', 'sim/flightmodel/engine/ENGN_thro_override',
+                    'sim/flightmodel/controls/parkbrake']
+        values_set = action
         self.xpc.sendDREFs(datarefs, values_set)
 
         # делаем степ
         '''
-        sim/flightmodel/controls/elv_trim высота тангаж pitch
+        sim/flightmodel/controls/elv_trim тангаж pitch
         sim/flightmodel/controls/ail_trim крен roll
         sim/flightmodel/controls/rud_trim поворот yaw
         sim/flightmodel/engine/ENGN_thro_override изменяем силу тяги (0.0 максимум -2 выключение) (-2; 0)
-        
+        sim/flightmodel/controls/parkbrake [0..1] тормоз parking brake 1 = max
         '''
-        target_lat = 55.97421646118164
-        target_lon = 37.4338493347168
-        target_elevation = 193.03797912597656
+
+        target_lat = TARGET_LAT
+        target_lon = TARGET_LON
+        target_elevation = TARGET_ELEVATION
         reward = -np.linalg.norm(np.array([self.latitude, self.longitude, self.elevation]) - np.array(
             [target_lat, target_lon, target_elevation]))
+
         # Loc: (55.97421646118164,) - широта (37.4338493347168,) - долгота (193.03797912597656,) - высота target loc
         # получаем датарефы
-        dg = ['sim/flightmodel/position/phi', 'sim/flightmodel/position/theta', 'sim/flightmodel/position/psi', 'sim/flightmodel/position/latitude',
-              'sim/flightmodel/position/longitude', 'sim/flightmodel/position/elevation',
+
+        dg = ['sim/flightmodel/position/phi', 'sim/flightmodel/position/theta', 'sim/flightmodel/position/psi',
+              'sim/flightmodel/position/latitude', 'sim/flightmodel/position/longitude',
+              'sim/flightmodel/position/elevation',
               'sim/cockpit2/gauges/indicators/airspeed_kts_pilot', 'sim/cockpit2/engine/indicators/engine_speed_rpm',
-              'sim/cockpit2/controls/flap_handle_request_ratio', 'sim/cockpit2/controls/gear_handle_down']
+              'sim/cockpit2/controls/flap_handle_request_ratio', 'sim/flightmodel/controls/parkbrake']
         datarefs_get = self.xpc.getDREFs(dg)
+
         '''
         sim/flightmodel/position/phi угол крена в градусах
         sim/flightmodel/position/theta тангаж
@@ -87,12 +129,13 @@ class Env(gym.Env):
         sim/cockpit2/engine/indicators/engine_speed_rpm rpm
         sim/cockpit2/gauges/indicators/airspeed_kts_pilot Indicated airspeed in knots, pilot. Writeable with override_IAS скорость самолета в узлах
         sim/cockpit2/controls/flap_handle_request_ratio The flap HANDLE location, in ratio, where 0.0 is handle fully retracted, and 1.0 is handle fully extended. закрылки
-	    sim/cockpit2/controls/gear_handle_down Gear handle position. 0 is up. 1 is down. тормоз
 	    sim/flightmodel/failures/onground_any 1 если на земле 0 если в воздухе
+	    sim/flightmodel/controls/parkbrake положение тормоза
         '''
 
         """
         (55.975649, 37.443439, 193.021088) - изначальная точка, в которую появлется самолет когда разбивается
+        (55.97564697265625,), (37.44343948364258,), (193.02459716796875,), (-21.0,)
         для того чтобы проверить разбился ли самолет, нужно сравнить широту, долготу, скорость самолета с -21
         """
 
@@ -106,15 +149,17 @@ class Env(gym.Env):
         self.airspeed = datarefs_get[6]
         self.rpm = datarefs_get[7]
         self.flap_position = datarefs_get[8]
-        self.gear_state = datarefs_get[9]
+        self.parking_brake = datarefs_get[9]
 
         done = False
-        if self.latitude == target_lat and self.longitude == target_lon and self.elevation == target_elevation:
+        if (target_lat - EPS <= self.latitude <= target_lat + EPS) and (
+                target_lon - EPS <= self.longitude <= target_lon + EPS) and (
+                target_elevation - EPS <= self.elevation <= target_elevation + EPS):
             done = True
 
-        return np.array([self.angle_of_attack, self.airspeed, self.pitch_angle, self.bank_angle, self.vertical_speed,
-                         self.rpm, self.gear_state, self.flap_position, self.latitude, self.longitude,
-                         self.elevation]), reward, done, {}
+        return np.array([self.roll, self.pitch, self.yaw, self.latitude, self.longitude, self.elevation, self.airspeed,
+                         self.rpm, self.flap_position, self.parking_brake]), reward, done, {}
 
 
 env = Env()
+env.reset()
