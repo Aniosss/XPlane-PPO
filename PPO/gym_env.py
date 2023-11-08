@@ -96,11 +96,11 @@ class Env(gym.Env):
 
         # делаем степ
         '''
-        sim/flightmodel/controls/elv_trim тангаж pitch
-        sim/flightmodel/controls/ail_trim крен roll
-        sim/flightmodel/controls/rud_trim поворот yaw
-        sim/flightmodel/engine/ENGN_thro_override изменяем силу тяги (0.0 максимум -2 выключение) (-2; 0)
-        sim/flightmodel/controls/parkbrake [0..1] тормоз parking brake 1 = max
+        sim/flightmodel/controls/elv_trim тангаж pitch [-1..1]
+        sim/flightmodel/controls/ail_trim крен roll [-1..1]
+        sim/flightmodel/controls/rud_trim поворот yaw [-1..1]
+        sim/flightmodel/engine/ENGN_thro_override изменяем силу тяги (0.0 максимум -2 выключение)(-1..1) - 1 -> (-2; 0)
+        sim/flightmodel/controls/parkbrake [0..1] (-1..1) -> max(0, x)  тормоз parking brake 1 = max
         '''
 
         target_lat = TARGET_LAT
@@ -160,6 +160,3 @@ class Env(gym.Env):
         return np.array([self.roll, self.pitch, self.yaw, self.latitude, self.longitude, self.elevation, self.airspeed,
                          self.rpm, self.flap_position, self.parking_brake]), reward, done, {}
 
-
-env = Env()
-env.reset()
