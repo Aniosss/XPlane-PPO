@@ -18,6 +18,10 @@ START_AIRSPEED = 104.39952087402344
 START_RPM = 1363.704345703125
 START_FLAP_POSITION = 0.0
 START_PARKING_BRAKE = 0.0
+START_ELV_TRIM = 0.0
+START_RUD_TRIM = 0.0
+START_AIL_TRIM = 0.0
+START_ENGO = 0.0
 
 TARGET_LAT = 55.97421646118164
 TARGET_LON = 37.4338493347168
@@ -29,18 +33,24 @@ DATAREFS_STATE = ['sim/flightmodel/position/phi', 'sim/flightmodel/position/thet
               'sim/flightmodel/position/latitude', 'sim/flightmodel/position/longitude',
               'sim/flightmodel/position/elevation',
               'sim/cockpit2/gauges/indicators/airspeed_kts_pilot', 'sim/cockpit2/engine/indicators/engine_speed_rpm',
-              'sim/flightmodel/controls/parkbrake']
+              'sim/flightmodel/controls/parkbrake', 'sim/flightmodel/forces/g_nrml',
+              'sim/flightmodel/controls/elv_trim', 'sim/flightmodel/controls/ail_trim',
+              'sim/flightmodel/controls/rud_trim', 'sim/flightmodel/engine/ENGN_thro_override']
 
 START_VALUES = [START_ROLL, START_PITCH, START_YAW, START_LATITUDE, START_LONGITUDE, START_ELEVATION, START_AIRSPEED,
-                START_RPM, START_PARKING_BRAKE]
+                START_RPM, START_PARKING_BRAKE, START_G_FORCE, START_ELV_TRIM, START_AIL_TRIM, START_RUD_TRIM,
+                START_ENGO]
 
 
 class Env(gym.Env):
     def __init__(self):
         super(Env, self).__init__()
 
-
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(9,))
+        self.ENGN_thro_override = 0.0
+        self.rud_trim = 0.0
+        self.ail_trim = 0.0
+        self.elv_trim = 0.0
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(14,))
         self.action_space = spaces.Box(low=-2, high=1, shape=(5,))
 
         self.xpc = XPlaneConnect()
@@ -81,7 +91,8 @@ class Env(gym.Env):
 
     def state(self):
         return np.array([self.roll, self.pitch, self.yaw, self.latitude, self.longitude, self.elevation, self.airspeed,
-                         self.rpm, self.parking_brake])
+                         self.rpm, self.parking_brake, self.g_force, self.elv_trim, self.ail_trim, self.rud_trim,
+                         self.ENGN_thro_override])
 
     def step(self, action):
         datarefs = ['sim/flightmodel/controls/elv_trim', 'sim/flightmodel/controls/ail_trim',
@@ -102,8 +113,10 @@ class Env(gym.Env):
         target_lat = TARGET_LAT
         target_lon = TARGET_LON
         target_elevation = TARGET_ELEVATION
-        reward = -np.linalg.norm(np.array([self.latitude, self.longitude, self.elevation]) - np.array(
-            [target_lat, target_lon, target_elevation])) - (abs(self.g_force) - 1) * 100
+        reward = -np.linalg.norm(np.array([self.latitude]) - np.array([target_lat])) * 1e6 - np.linalg.norm(
+            np.array([self.longitude])
+            - np.array([target_lon])) * 1e6 - np.linalg.norm(
+            np.array([self.elevation]) - np.array([target_elevation])) - (abs(abs(self.g_force) - 1.5)) * 1e6
 
         # Loc: (55.97421646118164,) - широта (37.4338493347168,) - долгота (193.03797912597656,) - высота target loc
         # получаем датарефы
@@ -112,7 +125,9 @@ class Env(gym.Env):
               'sim/flightmodel/position/latitude', 'sim/flightmodel/position/longitude',
               'sim/flightmodel/position/elevation',
               'sim/cockpit2/gauges/indicators/airspeed_kts_pilot', 'sim/cockpit2/engine/indicators/engine_speed_rpm',
-              'sim/flightmodel/controls/parkbrake', 'sim/flightmodel/forces/g_nrml']
+              'sim/flightmodel/controls/parkbrake', 'sim/flightmodel/forces/g_nrml',
+              'sim/flightmodel/controls/elv_trim', 'sim/flightmodel/controls/ail_trim',
+              'sim/flightmodel/controls/rud_trim', 'sim/flightmodel/engine/ENGN_thro_override']
         datarefs_get = self.xpc.getDREFs(dg)
 
         '''
@@ -147,6 +162,11 @@ class Env(gym.Env):
         self.rpm = datarefs_get[7][0]
         self.parking_brake = datarefs_get[8][0]
         self.g_force = datarefs_get[9][0]
+        self.elv_trim = datarefs_get[10][0]
+        self.ail_trim = datarefs_get[11][0]
+        self.rud_trim = datarefs_get[12][0]
+        self.ENGN_thro_override = datarefs_get[13][0]
+
         done = False
         if (target_lat - EPS <= self.latitude <= target_lat + EPS) and (
                 target_lon - EPS <= self.longitude <= target_lon + EPS) and (
@@ -154,5 +174,5 @@ class Env(gym.Env):
             done = True
 
         return np.array([self.roll, self.pitch, self.yaw, self.latitude, self.longitude, self.elevation, self.airspeed,
-                         self.rpm, self.parking_brake]), reward, done, {}
-
+                         self.rpm, self.parking_brake, self.g_force, self.elv_trim, self.ail_trim, self.rud_trim,
+                         self.ENGN_thro_override]), reward, done, {}

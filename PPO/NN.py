@@ -18,8 +18,8 @@ class NeuralNetwork(nn.Module):
         if isinstance(obs, np.ndarray):
             obs = torch.tensor(obs, dtype=torch.float)
 
-        act1 = nn.ELU()(self.l1(obs))
-        act2 = nn.ELU()(self.l2(act1))
+        act1 = torch.tanh(self.l1(obs))
+        act2 = torch.tanh(self.l2(act1))
         actions = torch.tanh(self.l3(act2))
 
         return actions

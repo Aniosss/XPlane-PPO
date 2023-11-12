@@ -43,7 +43,7 @@ class PPO:
 
         # Collect previous exp
         self.states, self.actions, self.rewards, self.old_policy_probs = self.collect_experience(self.env, self.actor,
-                                                                                                 num_epochs=5,
+                                                                                                 num_epochs=1,
                                                                                                  num_steps=100000)
 
         self.critic_values = []
@@ -67,10 +67,7 @@ class PPO:
             step = 0
             while not done and step < num_steps:
                 try:
-                    print(xpc.XPlaneConnect().getDREFs(
-                        ['sim/flightmodel/controls/elv_trim', 'sim/flightmodel/controls/ail_trim',
-                         'sim/flightmodel/controls/rud_trim', 'sim/flightmodel/engine/ENGN_thro_override',
-                         'sim/flightmodel/controls/parkbrake']))
+
 
                     with torch.no_grad():
                         action = policy_network(torch.tensor(state, dtype=torch.float))
@@ -78,6 +75,12 @@ class PPO:
 
                     action = np.squeeze(action.numpy())
                     next_state, reward, done, _ = self.env.step(scale_actions_to_correct(action))
+                    if step % 10 == 0:
+                        print(xpc.XPlaneConnect().getDREFs(
+                            ['sim/flightmodel/controls/elv_trim', 'sim/flightmodel/controls/ail_trim',
+                             'sim/flightmodel/controls/rud_trim', 'sim/flightmodel/engine/ENGN_thro_override',
+                             'sim/flightmodel/controls/parkbrake']))
+                        print(f'!!!Reward is {reward}')
 
                     states.append(state)
                     actions.append(action)
@@ -85,12 +88,14 @@ class PPO:
                     old_policy_probs.append(action_probs)
 
                     state = next_state
+                    step += 1
                 except:
-                    time.sleep(10)
+                    time.sleep(5)
                     break
         return states, actions, rewards, old_policy_probs
 
     def train_critic(self, num_critic_epochs):
+        print('Started training critic')
         for epoch in range(num_critic_epochs):
             print(f'Number epoch critic = {epoch}')
             for i in range(len(self.states)):
@@ -103,18 +108,15 @@ class PPO:
                 critic_loss.backward()
                 self.critic_optim.step()
 
-    def train_actor(self, num_epoch, num_steps, clip_range):
+    def train_actor(self, num_epoch):
+        print('Started training actor')
         for epoch in range(num_epoch):
             state = self.env.reset()
             done = False
+            step = 0
             old_policy_probs = torch.tensor(np.array(self.old_policy_probs[:5]), dtype=torch.float)
             while not done:
                 try:
-                    print(xpc.XPlaneConnect().getDREFs(
-                        ['sim/flightmodel/controls/elv_trim', 'sim/flightmodel/controls/ail_trim',
-                         'sim/flightmodel/controls/rud_trim', 'sim/flightmodel/engine/ENGN_thro_override',
-                         'sim/flightmodel/controls/parkbrake']))
-
                     new_actions = self.actor(torch.tensor(state, dtype=torch.float))
                     new_actions = np.squeeze(new_actions.detach().numpy())
                     new_state, reward, done, _ = self.env.step(scale_actions_to_correct(new_actions))
@@ -128,8 +130,19 @@ class PPO:
                     actor_loss = -ppo_loss
                     actor_loss.backward()
                     self.actor_optim.step()
+                    if step % 100 == 0:
+                        print(xpc.XPlaneConnect().getDREFs(
+                            ['sim/flightmodel/controls/elv_trim', 'sim/flightmodel/controls/ail_trim',
+                             'sim/flightmodel/controls/rud_trim', 'sim/flightmodel/engine/ENGN_thro_override',
+                             'sim/flightmodel/controls/parkbrake']))
+                        print(f'!!!Reward is {reward}, ppo_loss is {ppo_loss}!!!')
 
+                    if step % 1000 == 0:
+                        print(self.actor_optim.state_dict())
                     state = new_state
+                    step += 1
                 except:
-                    time.sleep(3)
+                    time.sleep(5.0)
                     break
+
+        torch.save(self.actor.state_dict(), 'model_scripted.pt')
