@@ -17,6 +17,7 @@ def scale_actions_to_correct(actions):
 def to_probs(action):
     return (torch.sigmoid(action) + 1) / 2
 
+
 def calc_adv(reward, critic_value):
     return reward - critic_value
 
@@ -43,7 +44,6 @@ class PPO:
 
         # Collect previous exp
         self.states, self.actions, self.rewards, self.old_policy_probs = self.collect_experience(self.env, self.actor,
-                                                                                                 num_epochs=1,
                                                                                                  num_steps=100000)
 
         self.critic_values = []
@@ -65,10 +65,8 @@ class PPO:
             state = env.reset()
             done = False
             step = 0
-            while not done and step < num_steps:
+            while not done:
                 try:
-
-
                     with torch.no_grad():
                         action = policy_network(torch.tensor(state, dtype=torch.float))
                         action_probs = to_probs(action)
@@ -122,7 +120,8 @@ class PPO:
                     new_state, reward, done, _ = self.env.step(scale_actions_to_correct(new_actions))
 
                     new_policy_probs = to_probs(torch.tensor(new_actions, dtype=torch.float))
-                    ppo_loss = self.ppo_loss(old_policy_probs, new_policy_probs, calc_adv(reward, self.critic(torch.tensor(state, dtype=torch.float))),
+                    ppo_loss = self.ppo_loss(old_policy_probs, new_policy_probs,
+                                             calc_adv(reward, self.critic(torch.tensor(state, dtype=torch.float))),
                                              self.clip_range)
                     old_policy_probs = new_policy_probs
 

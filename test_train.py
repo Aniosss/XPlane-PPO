@@ -12,8 +12,8 @@ def ex():
         env = gym_env.Env()
 
         ppo = PPO.PPO(NeuralNetwork, env)
-        ppo.train_critic(2)
-        ppo.train_actor(5000)
+        ppo.train_critic(30)
+        ppo.train_actor(50000)
 
 
 if __name__ == "__main__":
