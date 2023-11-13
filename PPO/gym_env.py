@@ -2,8 +2,10 @@ import time
 
 import gym
 import numpy as np
+import pyautogui
 from gym import spaces
-
+import pygetwindow as gw
+import keyboard
 import xpc
 from xpc import XPlaneConnect
 
@@ -67,12 +69,17 @@ class Env(gym.Env):
         self.rpm = START_RPM
         self.parking_brake = START_PARKING_BRAKE
 
-    def reset(self):
-        #       Lat             Lon              Alt              Pitch        Roll        Yaw       Gear
-        posi = [START_LATITUDE, START_LONGITUDE, START_ELEVATION, START_PITCH, START_ROLL, START_YAW, 0]
-        xpc.XPlaneConnect().sendPOSI(posi)
-        xpc.XPlaneConnect().sendDREFs(DATAREFS_STATE, START_VALUES)
+        self.xplane_window = gw.getWindowsWithTitle("X-System")
 
+        if len(self.xplane_window) > 0:
+            self.xplane_window[0].activate()
+        else:
+            print('Окно не найдено')
+            return
+
+    def reset(self):
+        pyautogui.press('f11')
+        time.sleep(3)
         # начальное состояние
         self.roll = START_ROLL
         self.pitch = START_PITCH
@@ -84,9 +91,7 @@ class Env(gym.Env):
         self.rpm = START_RPM
         self.parking_brake = START_PARKING_BRAKE
 
-        datarefs = DATAREFS_STATE
         values = START_VALUES
-        self.xpc.sendDREFs(datarefs, values)
         return values
 
     def state(self):

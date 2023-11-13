@@ -2,10 +2,23 @@ import time
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 
 import xpc
+
+################################## set device ##################################
+print("============================================================================================")
+# set device to cpu or cuda
+device = torch.device('cpu')
+if torch.cuda.is_available():
+    device = torch.device('cuda:0')
+    torch.cuda.empty_cache()
+    print("Device set to : " + str(torch.cuda.get_device_name(device)))
+else:
+    print("Device set to : cpu")
+print("============================================================================================")
 
 
 def scale_actions_to_correct(actions):
@@ -35,16 +48,29 @@ class PPO:
         self.clip_range = 0.2
 
         # Init actor and critic networks
-        self.actor = policy_class(self.obs_dim, self.act_dim)
-        self.critic = policy_class(self.obs_dim, 1)
+        self.actor = nn.Sequential(
+            nn.Linear(self.obs_dim, 64),
+            nn.Tanh(),
+            nn.Linear(64, 64),
+            nn.Tanh(),
+            nn.Linear(64, self.act_dim),
+            nn.Tanh()
+        )
+        self.critic = nn.Sequential(
+            nn.Linear(self.obs_dim, 64),
+            nn.LeakyReLU(0.2),
+            nn.Linear(64, 64),
+            nn.LeakyReLU(0.2),
+            nn.Linear(64, 1)
+        )
 
         # Init optimizers for actor and critic
         self.actor_optim = Adam(self.actor.parameters(), lr=self.lr)
         self.critic_optim = Adam(self.critic.parameters(), lr=self.lr)
 
         # Collect previous exp
-        self.states, self.actions, self.rewards, self.old_policy_probs = self.collect_experience(self.env, self.actor,
-                                                                                                 num_steps=100000)
+        self.states, self.actions, self.rewards, self.old_policy_probs = self.collect_experience(self.env,
+                                                                                                 num_epochs=200)
 
         self.critic_values = []
 
@@ -55,7 +81,7 @@ class PPO:
         surrogate2 = clipped_ratio * advantages
         return -torch.min(surrogate1, surrogate2).mean()
 
-    def collect_experience(self, env, policy_network, num_epochs, num_steps):
+    def collect_experience(self, env, num_epochs):
         states = []
         actions = []
         rewards = []
@@ -65,20 +91,26 @@ class PPO:
             state = env.reset()
             done = False
             step = 0
-            while not done:
+            policy_network = nn.Sequential(
+                nn.Linear(self.obs_dim, 64),
+                nn.Tanh(),
+                nn.Linear(64, 64),
+                nn.Tanh(),
+                nn.Linear(64, self.act_dim),
+                nn.Tanh()
+            )
+            while not done and step <= 20000:
                 try:
                     with torch.no_grad():
                         action = policy_network(torch.tensor(state, dtype=torch.float))
                         action_probs = to_probs(action)
 
-                    action = np.squeeze(action.numpy())
-                    next_state, reward, done, _ = self.env.step(scale_actions_to_correct(action))
-                    if step % 10 == 0:
-                        print(xpc.XPlaneConnect().getDREFs(
-                            ['sim/flightmodel/controls/elv_trim', 'sim/flightmodel/controls/ail_trim',
-                             'sim/flightmodel/controls/rud_trim', 'sim/flightmodel/engine/ENGN_thro_override',
-                             'sim/flightmodel/controls/parkbrake']))
-                        print(f'!!!Reward is {reward}')
+                    scaled_action = scale_actions_to_correct(np.squeeze(action.numpy()))
+                    next_state, reward, done, _ = self.env.step(scaled_action)
+
+                    if step % 300 == 0:
+                        print(f'Тангаж: {scaled_action[0]}, Крен: {scaled_action[1]}, Рысканье: {scaled_action[2]}, '
+                              f'Сила тяги: {scaled_action[3]}, Тормоз: {scaled_action[4]}')
 
                     states.append(state)
                     actions.append(action)
@@ -87,7 +119,9 @@ class PPO:
 
                     state = next_state
                     step += 1
-                except:
+                except Exception as e:
+                    # Обработка ошибки и вывод сообщения
+                    print(f"Произошла ошибка: {e}")
                     time.sleep(5)
                     break
         return states, actions, rewards, old_policy_probs
@@ -116,10 +150,10 @@ class PPO:
             while not done:
                 try:
                     new_actions = self.actor(torch.tensor(state, dtype=torch.float))
-                    new_actions = np.squeeze(new_actions.detach().numpy())
-                    new_state, reward, done, _ = self.env.step(scale_actions_to_correct(new_actions))
+                    scaled_action = scale_actions_to_correct(np.squeeze(new_actions.detach().numpy()))
+                    new_state, reward, done, _ = self.env.step(scale_actions_to_correct(scaled_action))
 
-                    new_policy_probs = to_probs(torch.tensor(new_actions, dtype=torch.float))
+                    new_policy_probs = to_probs(torch.tensor(scaled_action, dtype=torch.float))
                     ppo_loss = self.ppo_loss(old_policy_probs, new_policy_probs,
                                              calc_adv(reward, self.critic(torch.tensor(state, dtype=torch.float))),
                                              self.clip_range)
@@ -129,18 +163,19 @@ class PPO:
                     actor_loss = -ppo_loss
                     actor_loss.backward()
                     self.actor_optim.step()
-                    if step % 100 == 0:
-                        print(xpc.XPlaneConnect().getDREFs(
-                            ['sim/flightmodel/controls/elv_trim', 'sim/flightmodel/controls/ail_trim',
-                             'sim/flightmodel/controls/rud_trim', 'sim/flightmodel/engine/ENGN_thro_override',
-                             'sim/flightmodel/controls/parkbrake']))
-                        print(f'!!!Reward is {reward}, ppo_loss is {ppo_loss}!!!')
+                    if step % 300 == 0:
+                        print(
+                            f'Тангаж: {scaled_action[0]}, Крен: {scaled_action[1]}, Рысканье: {scaled_action[2]}, '
+                            f'Сила тяги: {scaled_action[3]}, Тормоз: {scaled_action[4]}')
+                        print('------------------------------------------------------------------------------------------------------------------------------------------------------')
+                        print(f'Reward: {reward}, PPO loss: {ppo_loss}')
+                        print(
+                              "=======================================================================================================================================================")
 
-                    if step % 1000 == 0:
-                        print(self.actor_optim.state_dict())
                     state = new_state
                     step += 1
-                except:
+                except Exception as e:
+                    print(e)
                     time.sleep(5.0)
                     break
 
