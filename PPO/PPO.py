@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import MultivariateNormal
 from torch.optim import Adam
 
 import xpc
@@ -35,148 +36,191 @@ def calc_adv(reward, critic_value):
     return reward - critic_value
 
 
-class PPO:
-    def __init__(self, policy_class, env):
-        # Enviroment info
+class ActorCritic(nn.Module):
+    def __init__(self, state_dim, action_dim, action_std_init):
+        super(ActorCritic, self).__init__()
 
+        self.action_dim = action_dim
+        self.action_var = torch.full((action_dim,), action_std_init * action_std_init).to(device)
+        # actor
+        self.actor = nn.Sequential(
+            nn.Linear(state_dim, 64),
+            nn.Tanh(),
+            nn.Linear(64, 64),
+            nn.Tanh(),
+            nn.Linear(64, action_dim),
+            nn.Tanh()
+        )
+
+        # critic
+        self.critic = nn.Sequential(
+            nn.Linear(state_dim, 64),
+            nn.Linear(64, 64),
+            nn.Linear(64, 1)
+        )
+
+    def set_action_std(self, new_action_std):
+        self.action_var = torch.full((self.action_dim,), new_action_std * new_action_std).to(device)
+
+    def forward(self):
+        raise NotImplementedError
+
+    def act(self, state):
+        action_mean = self.actor(state)
+        cov_mat = torch.diag(self.action_var).unsqueeze(dim=0)
+        dist = MultivariateNormal(action_mean, cov_mat)
+
+        action = dist.sample()
+        action_logprob = dist.log_prob(action)
+        state_val = self.critic(state)
+
+        return action.detach(), action_logprob.detach(), state_val.detach()
+
+    def evaluate(self, state, action):
+        action_mean = self.actor(state)
+
+        action_var = self.action_var.expand_as(action_mean)
+        cov_mat = torch.diag_embed(action_var).to(device)
+        dist = MultivariateNormal(action_mean, cov_mat)
+
+        action_logprobs = dist.log_prob(action)
+        dist_entropy = dist.entropy()
+        state_values = self.critic(state)
+
+        return action_logprobs, state_values, dist_entropy
+
+
+class RolloutBuffer:
+    def __init__(self):
+        self.actions = []
+        self.states = []
+        self.logprobs = []
+        self.rewards = []
+        self.state_values = []
+        self.is_terminals = []
+
+    def clear(self):
+        del self.actions[:]
+        del self.states[:]
+        del self.logprobs[:]
+        del self.rewards[:]
+        del self.state_values[:]
+        del self.is_terminals[:]
+
+
+class PPO:
+    def __init__(self, env, lr_actor, lr_critic, gamma, num_epochs, eps_clip, action_std_init=0.6):
+        # Enviroment info
         self.env = env
         self.obs_dim = env.observation_space.shape[0]
         self.act_dim = env.action_space.shape[0]
 
         # Init hyperparameters
-        self.lr = 0.001
-        self.clip_range = 0.2
+        self.lr_critic = lr_critic
+        self.lr_actor = lr_actor
+
+        self.action_std = action_std_init
+
+        self.eps_clip = eps_clip
+        self.num_epoch = num_epochs
+        self.gamma = gamma
+
+        self.buffer = RolloutBuffer()
 
         # Init actor and critic networks
-        self.actor = nn.Sequential(
-            nn.Linear(self.obs_dim, 64),
-            nn.Tanh(),
-            nn.Linear(64, 64),
-            nn.Tanh(),
-            nn.Linear(64, self.act_dim),
-            nn.Tanh()
-        )
-        self.critic = nn.Sequential(
-            nn.Linear(self.obs_dim, 64),
-            nn.LeakyReLU(0.2),
-            nn.Linear(64, 64),
-            nn.LeakyReLU(0.2),
-            nn.Linear(64, 1)
-        )
+        self.policy = ActorCritic(self.obs_dim, self.act_dim, action_std_init=0.6).to(device)
+        self.optimizer = Adam([
+            {'params': self.policy.actor.parameters(), 'lr': self.lr_actor},
+            {'params': self.policy.critic.parameters(), 'lr': self.lr_critic}
+        ])
 
-        # Init optimizers for actor and critic
-        self.actor_optim = Adam(self.actor.parameters(), lr=self.lr)
-        self.critic_optim = Adam(self.critic.parameters(), lr=self.lr)
+        self.policy_old = ActorCritic(self.obs_dim, self.act_dim, action_std_init=0.6).to(device)
+        self.policy_old.load_state_dict(self.policy.state_dict())
 
-        # Collect previous exp
-        self.states, self.actions, self.rewards, self.old_policy_probs = self.collect_experience(self.env,
-                                                                                                 num_epochs=200)
+        self.MseLoss = nn.MSELoss()
 
-        self.critic_values = []
+    def set_action_std(self, new_action_std):
+        self.action_std = new_action_std
+        self.policy.set_action_std(new_action_std)
+        self.policy_old.set_action_std(new_action_std)
 
-    def ppo_loss(self, old_policy_probs, new_policy_probs, advantages, clip_range):
-        ratio = new_policy_probs / old_policy_probs
-        clipped_ratio = torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
-        surrogate1 = ratio * advantages
-        surrogate2 = clipped_ratio * advantages
-        return -torch.min(surrogate1, surrogate2).mean()
+    def decay_action_std(self, action_std_decay_rate, min_action_std):
+        self.action_std = self.action_std - action_std_decay_rate
+        self.action_std = round(self.action_std, 4)
+        if self.action_std <= min_action_std:
+            self.action_std = min_action_std
+            print("setting actor output action_std to min_action_std : ", self.action_std)
+        else:
+            print("setting actor output action_std to : ", self.action_std)
+        self.set_action_std(self.action_std)
 
-    def collect_experience(self, env, num_epochs):
-        states = []
-        actions = []
+    def select_action(self, state):
+        with torch.no_grad():
+            state = torch.FloatTensor(state).to(device)
+            action, action_logprob, state_val = self.policy_old.act(state)
+
+        self.buffer.states.append(state)
+        self.buffer.actions.append(action)
+        self.buffer.logprobs.append(action_logprob)
+        self.buffer.state_values.append(state_val)
+
+        return action.detach().cpu().numpy().flatten()
+
+    def update(self):
+        # Monte Carlo estimate of returns
         rewards = []
-        old_policy_probs = []
+        discounted_reward = 0
+        for reward, is_terminal in zip(reversed(self.buffer.rewards), reversed(self.buffer.is_terminals)):
+            if is_terminal:
+                discounted_reward = 0
+            discounted_reward = reward + (self.gamma * discounted_reward)
+            rewards.insert(0, discounted_reward)
 
-        for epoch in range(num_epochs):
-            state = env.reset()
-            done = False
-            step = 0
-            policy_network = nn.Sequential(
-                nn.Linear(self.obs_dim, 64),
-                nn.Tanh(),
-                nn.Linear(64, 64),
-                nn.Tanh(),
-                nn.Linear(64, self.act_dim),
-                nn.Tanh()
-            )
-            while not done and step <= 20000:
-                try:
-                    with torch.no_grad():
-                        action = policy_network(torch.tensor(state, dtype=torch.float))
-                        action_probs = to_probs(action)
+        # Normalizing the rewards
+        rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
 
-                    scaled_action = scale_actions_to_correct(np.squeeze(action.numpy()))
-                    next_state, reward, done, _ = self.env.step(scaled_action)
+        # convert list to tensor
+        old_states = torch.squeeze(torch.stack(self.buffer.states, dim=0)).detach().to(device)
+        old_actions = torch.squeeze(torch.stack(self.buffer.actions, dim=0)).detach().to(device)
+        old_logprobs = torch.squeeze(torch.stack(self.buffer.logprobs, dim=0)).detach().to(device)
+        old_state_values = torch.squeeze(torch.stack(self.buffer.state_values, dim=0)).detach().to(device)
 
-                    if step % 300 == 0:
-                        print(f'Тангаж: {scaled_action[0]}, Крен: {scaled_action[1]}, Рысканье: {scaled_action[2]}, '
-                              f'Сила тяги: {scaled_action[3]}, Тормоз: {scaled_action[4]}')
+        # calculate advantages
+        advantages = rewards.detach() - old_state_values.detach()
 
-                    states.append(state)
-                    actions.append(action)
-                    rewards.append(reward)
-                    old_policy_probs.append(action_probs)
+        # Optimize policy for K epochs
+        for _ in range(self.num_epoch):
+            # Evaluating old actions and values
+            logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
 
-                    state = next_state
-                    step += 1
-                except Exception as e:
-                    # Обработка ошибки и вывод сообщения
-                    print(f"Произошла ошибка: {e}")
-                    time.sleep(5)
-                    break
-        return states, actions, rewards, old_policy_probs
+            # match state_values tensor dimensions with rewards tensor
+            state_values = torch.squeeze(state_values)
 
-    def train_critic(self, num_critic_epochs):
-        print('Started training critic')
-        for epoch in range(num_critic_epochs):
-            print(f'Number epoch critic = {epoch}')
-            for i in range(len(self.states)):
-                state = self.states[i]
-                expected_value = self.critic(torch.tensor(state, dtype=torch.float))
-                target = torch.tensor([self.rewards[i]], dtype=torch.float)
+            # Finding the ratio (pi_theta / pi_theta__old)
+            ratios = torch.exp(logprobs - old_logprobs.detach())
 
-                critic_loss = F.mse_loss(expected_value, target)
-                self.critic_optim.zero_grad()
-                critic_loss.backward()
-                self.critic_optim.step()
+            # Finding Surrogate Loss
+            surr1 = ratios * advantages
+            surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
 
-    def train_actor(self, num_epoch):
-        print('Started training actor')
-        for epoch in range(num_epoch):
-            state = self.env.reset()
-            done = False
-            step = 0
-            old_policy_probs = torch.tensor(np.array(self.old_policy_probs[:5]), dtype=torch.float)
-            while not done:
-                try:
-                    new_actions = self.actor(torch.tensor(state, dtype=torch.float))
-                    scaled_action = scale_actions_to_correct(np.squeeze(new_actions.detach().numpy()))
-                    new_state, reward, done, _ = self.env.step(scale_actions_to_correct(scaled_action))
+            # final loss of clipped objective PPO
+            loss = -torch.min(surr1, surr2) + 0.5 * self.MseLoss(state_values, rewards) - 0.01 * dist_entropy
 
-                    new_policy_probs = to_probs(torch.tensor(scaled_action, dtype=torch.float))
-                    ppo_loss = self.ppo_loss(old_policy_probs, new_policy_probs,
-                                             calc_adv(reward, self.critic(torch.tensor(state, dtype=torch.float))),
-                                             self.clip_range)
-                    old_policy_probs = new_policy_probs
+            # take gradient step
+            self.optimizer.zero_grad()
+            loss.mean().backward()
+            self.optimizer.step()
 
-                    self.actor_optim.zero_grad()
-                    actor_loss = -ppo_loss
-                    actor_loss.backward()
-                    self.actor_optim.step()
-                    if step % 300 == 0:
-                        print(
-                            f'Тангаж: {scaled_action[0]}, Крен: {scaled_action[1]}, Рысканье: {scaled_action[2]}, '
-                            f'Сила тяги: {scaled_action[3]}, Тормоз: {scaled_action[4]}')
-                        print('------------------------------------------------------------------------------------------------------------------------------------------------------')
-                        print(f'Reward: {reward}, PPO loss: {ppo_loss}')
-                        print(
-                              "=======================================================================================================================================================")
+        # Copy new weights into old policy
+        self.policy_old.load_state_dict(self.policy.state_dict())
 
-                    state = new_state
-                    step += 1
-                except Exception as e:
-                    print(e)
-                    time.sleep(5.0)
-                    break
+        # clear buffer
+        self.buffer.clear()
 
-        torch.save(self.actor.state_dict(), 'model_scripted.pt')
+    def save(self, checkpoint_path):
+        torch.save(self.policy_old.state_dict(), checkpoint_path)
+
+    def load(self, checkpoint_path):
+        self.policy_old.load_state_dict(torch.load(checkpoint_path, map_location=lambda storage, loc: storage))
+        self.policy.load_state_dict(torch.load(checkpoint_path, map_location=lambda storage, loc: storage))
